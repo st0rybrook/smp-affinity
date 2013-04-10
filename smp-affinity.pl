@@ -13,10 +13,13 @@ use Data::Dumper;
 our $VERSION = '0.1';
 
 my $verbose;
+my ($no_rps, $no_xps);
 my $cpumap_path;
 my %options = (
 	'c|cpumap=s' => \$cpumap_path,
 	'h|help' => sub { usage(0) },
+	'no-rps' => \$no_rps,
+	'no-xps' => \$no_xps,
 	'v|verbose+' => \$verbose,
 	'version' => sub { print "smp-affinity.pl $VERSION\n";  exit 0 },
 );
@@ -153,11 +156,16 @@ sub configure_itfs
 		my $itf = $itfs->{$itfname} or die;
 
 		foreach my $queue (@{$itf->{QUEUES}}) {
+			my ($rps_mask, $xps_mask) = ($queue->{MASK}, $queue->{MASK});
+
+			$rps_mask = 0xffffffff if $no_rps;
+			$xps_mask = 0xffffffff if $no_xps;
 			irq_set_affinity($queue->{IRQ}, $queue->{MASK});
-			set_rps_affinity($itfname, $queue->{NUM}, $queue->{MASK});
-			set_xps_affinity($itfname, $queue->{NUM}, $queue->{MASK});
+			set_rps_affinity($itfname, $queue->{NUM}, $rps_mask);
+			set_xps_affinity($itfname, $queue->{NUM}, $xps_mask);
+
 			printf "$itf->{NAME}:$queue->{NUM}: affinity=%x rps=%x xps=%x\n",
-				$queue->{MASK}, $queue->{MASK}, $queue->{MASK} if $verbose;
+				$queue->{MASK}, $rps_mask, $xps_mask if $verbose;
 		}
 	}
 }
