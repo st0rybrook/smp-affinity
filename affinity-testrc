@@ -1,0 +1,6 @@
+$cfg = {
+	INTERFACES => {
+		eth18 => { QUEUES => [0, 1], CPUS => [0, 1] },
+		eth19 => { QUEUES => [0, 1], CPUS => [0, 1] },
+	},
+};
