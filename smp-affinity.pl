@@ -2,7 +2,7 @@
 #
 # USAGE
 #
-#   smp-affinity.pl --cpumap FILE
+#   smp-affinity.pl [--cpumap FILE | --file FILE]
 #
 # Holger Eitzenberger <holger.eitzenberger@sophos.com>, 2013.
 
@@ -11,12 +11,14 @@ use Getopt::Long;
 use Data::Dumper;
 
 our $VERSION = '0.1';
+our $cfg;
 
 my $verbose;
 my ($no_rps, $no_xps);
-my $cpumap_path;
+my ($cpumap_path, $cfg_path);
 my %options = (
 	'c|cpumap=s' => \$cpumap_path,
+	'f|file=s' => \$cfg_path,
 	'h|help' => sub { usage(0) },
 	'no-rps' => \$no_rps,
 	'no-xps' => \$no_xps,
@@ -27,8 +29,13 @@ my %options = (
 Getopt::Long::config('bundling');
 Getopt::Long::GetOptions %options or die;
 
-usage(1, 'cpumap missing, use --cpumap FILE') unless $cpumap_path;
-cpumap_apply($cpumap_path);
+if ($cpumap_path) {
+	cpumap_apply($cpumap_path);
+} elsif ($cfg_path) {
+	config_apply($cfg_path);
+} else {
+	usage(1, "no config or cpumap specified");
+}
 
 exit 0;
 
@@ -85,22 +92,26 @@ sub itf_add_queue
 
 	my $queue = ${$itf->{QUEUES}}[$queuenum];
 
-	$queue->{IRQ} = itf_queue_get_irq($itfname, $queuenum) or die;
+	$queue->{IRQ} = itf_queue_get_irq($itfname, $queuenum) or do {
+		# FIXME probably better to ignore this entry, because
+		# interface may be just DOWN
+		die "$itfname:$queuenum: no IRQ found for this queue\n";
+	};
 	$queue->{MASK} |= 1 << $cpunum;
 }
 
 sub itf_cmp
 {
-	$a =~ /^(\D+)(\d)$/;
+	$a =~ /^(\D+)(\d+)/;
 	my ($aname, $anum) = ($1, $2);
-	$b =~ /^(\D+)(\d)$/;
+	$b =~ /^(\D+)(\d+)/;
 	my ($bname, $bnum) = ($1, $2);
 	if ($verbose > 2) {
 		print "itf_cmp: aname=$aname anum=$anum bname=$bname bnum=$bnum\n";
 	}
 
 	return $aname cmp $bname if $aname ne $bname;
-	return $anum <=> $bnum;
+	return $anum <=> $bnum
 }
 
 sub dump_itfs
@@ -130,6 +141,9 @@ sub set_rps_affinity
 {
 	my ($itfname, $queuenum, $mask) = @_;
 
+	$mask = 0xffffffff if $no_rps;
+	#$mask = 0x0 if $no_rps;
+
 	my $path = "/sys/class/net/$itfname/queues/rx-$queuenum/rps_cpus";
 	open my $fh, '>', "$path" or die "$itfname:$queuenum: $!";
 
@@ -140,6 +154,9 @@ sub set_rps_affinity
 sub set_xps_affinity
 {
 	my ($itfname, $queuenum, $mask) = @_;
+
+	$mask = 0xffffffff if $no_xps;
+	#$mask = 0x0 if $no_rps;
 
 	my $path = "/sys/class/net/$itfname/queues/tx-$queuenum/xps_cpus";
 	open my $fh, '>', "$path" or die "$itfname:$queuenum: $!";
@@ -156,18 +173,35 @@ sub configure_itfs
 		my $itf = $itfs->{$itfname} or die;
 
 		foreach my $queue (@{$itf->{QUEUES}}) {
-			my ($rps_mask, $xps_mask) = ($queue->{MASK}, $queue->{MASK});
-
-			$rps_mask = 0xffffffff if $no_rps;
-			$xps_mask = 0xffffffff if $no_xps;
 			irq_set_affinity($queue->{IRQ}, $queue->{MASK});
-			set_rps_affinity($itfname, $queue->{NUM}, $rps_mask);
-			set_xps_affinity($itfname, $queue->{NUM}, $xps_mask);
-
+			set_rps_affinity($itfname, $queue->{NUM}, $queue->{MASK});
+			set_xps_affinity($itfname, $queue->{NUM}, $queue->{MASK});
 			printf "$itf->{NAME}:$queue->{NUM}: affinity=%x rps=%x xps=%x\n",
-				$queue->{MASK}, $rps_mask, $xps_mask if $verbose;
+				$queue->{MASK}, $queue->{MASK}, $queue->{MASK} if $verbose;
 		}
 	}
+}
+
+sub config_apply
+{
+	my ($path) = @_;
+	my %itfs;
+
+	do $path or die "$path: $!\n";
+
+	foreach my $itfname (sort itf_cmp keys %{$cfg->{INTERFACES}}) {
+		my $itf = $cfg->{INTERFACES}{$itfname} or die;
+
+		foreach my $queuenum (@{$itf->{QUEUES}}) {
+			foreach my $cpunum (@{$itf->{CPUS}}) {
+				itf_add_queue(\%itfs, $itfname, $queuenum, $cpunum);
+			}
+		}
+	}
+
+	#dump_itfs(\%itfs);
+
+	configure_itfs(\%itfs);
 }
 
 sub cpumap_apply
