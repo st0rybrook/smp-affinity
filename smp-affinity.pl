@@ -141,8 +141,9 @@ sub set_rps_affinity
 {
 	my ($itfname, $queuenum, $mask) = @_;
 
-	$mask = 0xffffffff if $no_rps;
-	#$mask = 0x0 if $no_rps;
+	# Disable RPS.  Note that specifying a mask of 0xffffffff is
+	# different, as it enables RPS for all CPUs.
+	$mask = 0x0 if $no_rps;
 
 	my $path = "/sys/class/net/$itfname/queues/rx-$queuenum/rps_cpus";
 	open my $fh, '>', "$path" or die "$itfname:$queuenum: $!";
@@ -155,8 +156,9 @@ sub set_xps_affinity
 {
 	my ($itfname, $queuenum, $mask) = @_;
 
-	$mask = 0xffffffff if $no_xps;
-	#$mask = 0x0 if $no_rps;
+	# Disable XPS.  Note that specifying a mask of 0xffffffff is
+	# different, as it enables XPS for all CPUs.
+	$mask = 0x0 if $no_xps;
 
 	my $path = "/sys/class/net/$itfname/queues/tx-$queuenum/xps_cpus";
 	open my $fh, '>', "$path" or die "$itfname:$queuenum: $!";
