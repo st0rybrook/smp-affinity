@@ -194,9 +194,11 @@ sub config_apply
 	foreach my $itfname (sort itf_cmp keys %{$cfg->{INTERFACES}}) {
 		my $itf = $cfg->{INTERFACES}{$itfname} or die;
 
-		foreach my $queuenum (@{$itf->{QUEUES}}) {
-			foreach my $cpunum (@{$itf->{CPUS}}) {
-				itf_add_queue(\%itfs, $itfname, $queuenum, $cpunum);
+		foreach my $queue (ref($itf) eq 'ARRAY' ? @$itf : $itf) {
+			foreach my $queuenum (@{$queue->{QUEUES}}) {
+				foreach my $cpunum (@{$queue->{CPUS}}) {
+					itf_add_queue(\%itfs, $itfname, $queuenum, $cpunum);
+				}
 			}
 		}
 	}

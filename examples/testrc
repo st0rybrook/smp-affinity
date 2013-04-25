@@ -1,6 +1,10 @@
 $cfg = {
 	INTERFACES => {
-		eth18 => { QUEUES => [0, 1], CPUS => [0, 1] },
+		# both an ARRAYREF and a HASHREF are supported
+		eth18 => [
+				{ QUEUES => [0, 1], CPUS => [0, 1] },
+				{ QUEUES => [2,3], CPUS => [2] },
+			],
 		eth19 => { QUEUES => [0, 1], CPUS => [0, 1] },
 	},
 };
