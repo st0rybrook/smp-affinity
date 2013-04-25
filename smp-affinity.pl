@@ -16,12 +16,14 @@ our $cfg;
 my $verbose;
 my ($no_rps, $no_xps);
 my ($cpumap_path, $cfg_path);
+my ($do_reset);
 my %options = (
 	'c|cpumap=s' => \$cpumap_path,
 	'f|file=s' => \$cfg_path,
 	'h|help' => sub { usage(0) },
 	'no-rps' => \$no_rps,
 	'no-xps' => \$no_xps,
+	'reset' => \$do_reset,
 	'v|verbose+' => \$verbose,
 	'version' => sub { print "smp-affinity.pl $VERSION\n";  exit 0 },
 );
@@ -33,6 +35,8 @@ if ($cpumap_path) {
 	cpumap_apply($cpumap_path);
 } elsif ($cfg_path) {
 	config_apply($cfg_path);
+} elsif ($do_reset) {
+	config_reset();
 } else {
 	usage(1, "no config or cpumap specified");
 }
@@ -245,6 +249,40 @@ sub cpumap_apply
 	#dump_itfs(\%itfs);
 
 	configure_itfs(\%itfs);
+}
+
+# reset state for all UP interfaces
+sub config_reset
+{
+	my %itfs;
+
+	open my $fh, '<', '/proc/interrupts' or die "interrupts: $!";
+
+	while (my $line = <$fh>) {
+		chomp $line;
+
+		my @tokens = split /\s+/, $line;
+		shift @tokens;
+
+		my $irq = shift @tokens;
+		# not an IRQ line
+		next unless $irq =~ /^(\d+):/;
+		my $irqnum = $1;
+
+		# FIXME does not work for shared IRQs
+		my $if_queue = splice @tokens, -1;
+
+		# FIXME support other NICs
+		if ($if_queue =~ /^(.+)-TxRx-(\d+)$/) {
+			my ($itfname, $queuenum) = ($1, $2);
+
+			irq_set_affinity($irqnum, 0xffffffff);
+			set_rps_affinity($itfname, $queuenum, 0x0);
+			set_xps_affinity($itfname, $queuenum, 0x0);
+			printf "$itfname:$queuenum: affinity=0xffffffff rps=0x0 "
+				. "xps=0x0\n" if $verbose;
+		}
+	}
 }
 
 sub usage
