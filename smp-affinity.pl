@@ -77,15 +77,16 @@ sub itf_queue_get_irq
 	return $queue_irq;
 }
 
+sub itf_init_itf
+{
+	my ($itfs, $itfname) = @_;
+
+	$itfs->{$itfname} = { NAME => $itfname, QUEUES => [] };
+}
+
 sub itf_add_queue
 {
 	my ($itfs, $itfname, $queuenum, $cpunum) = @_;
-
-	unless (exists $itfs->{$itfname}) {
-		$itfs->{$itfname} = {
-				NAME => $itfname, QUEUES => [],
-			};
-	}
 
 	my $itf = $itfs->{$itfname};
 	unless (defined ${$itf->{QUEUES}}[$queuenum]) {
@@ -198,6 +199,8 @@ sub config_apply
 	foreach my $itfname (sort itf_cmp keys %{$cfg->{INTERFACES}}) {
 		my $itf = $cfg->{INTERFACES}{$itfname} or die;
 
+		itf_init_itf(\%itfs, $itfname) unless exists $itfs{$itfname};
+
 		foreach my $queue (ref($itf) eq 'ARRAY' ? @$itf : $itf) {
 			foreach my $queuenum (@{$queue->{QUEUES}}) {
 				foreach my $cpunum (@{$queue->{CPUS}}) {
@@ -239,6 +242,7 @@ sub cpumap_apply
 			if ($if_queue =~ /^(\S+):(\d+)$/) {
 				my ($itf, $queuenum) = ($1, $2);
 
+				itf_init_itf(\%itfs, $itf) unless exists $itfs{$itf};
 				itf_add_queue(\%itfs, $itf, $queuenum, $cpunum);
 			}
 		}
