@@ -4,6 +4,11 @@ $cfg = {
 		eth18 => [
 				{ QUEUES => [0, 1], CPUS => [0, 1] },
 				{ QUEUES => [2,3], CPUS => [2] },
+
+				# Use IRQ smp_affinity different to steering CPUs
+				#
+				# If IRQ_CPUS is missing it holds IRQ_CPUS == CPUS
+				{ QUEUES => [4], IRQ_CPUS => [3], CPUS => [3, 4] },
 			],
 		eth19 => { QUEUES => [0, 1], CPUS => [0, 1] },
 	},

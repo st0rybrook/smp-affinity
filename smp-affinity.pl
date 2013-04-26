@@ -109,6 +109,47 @@ sub itf_add_queue
 	$queue->{STEERING_MASK} |= 1 << $cpunum;
 }
 
+sub itf_queue_set_irq_affinity
+{
+	my ($itfs, $itfname, $queuenum, $cpunum) = @_;
+
+	my $itf = $itfs->{$itfname};
+	unless (defined ${$itf->{QUEUES}}[$queuenum]) {
+		$itf->{QUEUES}[$queuenum] = {
+				NUM => $queuenum, IRQ => 0,
+				IRQ_MASK => 0,
+				STEERING_MASK => 0,
+			};
+	}
+
+	my $queue = ${$itf->{QUEUES}}[$queuenum];
+
+	$queue->{IRQ} = itf_queue_get_irq($itfname, $queuenum) or do {
+		# FIXME probably better to ignore this entry, because
+		# interface may be just DOWN
+		die "$itfname:$queuenum: no IRQ found for this queue\n";
+	};
+	$queue->{IRQ_MASK} |= 1 << $cpunum;
+}
+
+sub itf_queue_set_steering_cpus
+{
+	my ($itfs, $itfname, $queuenum, $cpunum) = @_;
+
+	my $itf = $itfs->{$itfname};
+	unless (defined ${$itf->{QUEUES}}[$queuenum]) {
+		$itf->{QUEUES}[$queuenum] = {
+				NUM => $queuenum, IRQ => 0,
+				IRQ_MASK => 0,
+				STEERING_MASK => 0,
+			};
+	}
+
+	my $queue = ${$itf->{QUEUES}}[$queuenum];
+
+	$queue->{STEERING_MASK} |= 1 << $cpunum;
+}
+
 sub itf_cmp
 {
 	$a =~ /^(\D+)(\d+)/;
@@ -138,6 +179,7 @@ sub irq_set_affinity
 {
 	my ($irq, $mask) = @_;
 
+	die "will not configure timer IRQ 0" if $irq == 0;
 	open my $fh, '>', "/proc/irq/$irq/smp_affinity" or do {
 			die "irq$irq: smp_affinity: $!"
 		};
@@ -210,8 +252,18 @@ sub config_apply
 
 		foreach my $queue (ref($itf) eq 'ARRAY' ? @$itf : $itf) {
 			foreach my $queuenum (@{$queue->{QUEUES}}) {
+				if (exists $queue->{IRQ_CPUS}) {
+					foreach my $cpunum (@{$queue->{IRQ_CPUS}}) {
+						itf_queue_set_irq_affinity(\%itfs, $itfname, $queuenum,
+							$cpunum);
+					}
+				}
+
 				foreach my $cpunum (@{$queue->{CPUS}}) {
-					itf_add_queue(\%itfs, $itfname, $queuenum, $cpunum);
+					itf_queue_set_irq_affinity(\%itfs, $itfname, $queuenum,
+						$cpunum) if not exists $queue->{IRQ_CPUS};
+					itf_queue_set_steering_cpus(\%itfs, $itfname, $queuenum,
+						$cpunum);
 				}
 			}
 		}
