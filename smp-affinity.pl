@@ -84,6 +84,20 @@ sub itf_init_itf
 	$itfs->{$itfname} = { NAME => $itfname, QUEUES => [] };
 }
 
+sub itf_init_queue
+{
+	my ($itf, $queuenum) = @_;
+
+	if (defined ${$itf->{QUEUES}}[$queuenum]) {
+		die "configuration entry for '$itf->{NAME}:$queuenum' already exists";
+	}
+	${$itf->{QUEUES}}[$queuenum] = {
+			NUM => $queuenum, IRQ => 0,
+			IRQ_MASK => 0,
+			STEERING_MASK => 0,
+		};
+}
+
 # set both IRQ_MASK and STEERING_MASK to same value
 sub itf_add_queue
 {
@@ -91,11 +105,7 @@ sub itf_add_queue
 
 	my $itf = $itfs->{$itfname};
 	unless (defined ${$itf->{QUEUES}}[$queuenum]) {
-		$itf->{QUEUES}[$queuenum] = {
-				NUM => $queuenum, IRQ => 0,
-				IRQ_MASK => 0,
-				STEERING_MASK => 0,
-			};
+		itf_init_queue($itf, $queuenum);
 	}
 
 	my $queue = ${$itf->{QUEUES}}[$queuenum];
@@ -115,11 +125,7 @@ sub itf_queue_set_irq_affinity
 
 	my $itf = $itfs->{$itfname};
 	unless (defined ${$itf->{QUEUES}}[$queuenum]) {
-		$itf->{QUEUES}[$queuenum] = {
-				NUM => $queuenum, IRQ => 0,
-				IRQ_MASK => 0,
-				STEERING_MASK => 0,
-			};
+		itf_init_queue($itf, $queuenum);
 	}
 
 	my $queue = ${$itf->{QUEUES}}[$queuenum];
@@ -138,11 +144,7 @@ sub itf_queue_set_steering_cpus
 
 	my $itf = $itfs->{$itfname};
 	unless (defined ${$itf->{QUEUES}}[$queuenum]) {
-		$itf->{QUEUES}[$queuenum] = {
-				NUM => $queuenum, IRQ => 0,
-				IRQ_MASK => 0,
-				STEERING_MASK => 0,
-			};
+		itf_init_queue($itf, $queuenum);
 	}
 
 	my $queue = ${$itf->{QUEUES}}[$queuenum];
@@ -179,6 +181,7 @@ sub irq_set_affinity
 {
 	my ($irq, $mask) = @_;
 
+	# IRQ 0 is the timer IRQ, consider it invalid
 	die "will not configure timer IRQ 0" if $irq == 0;
 	open my $fh, '>', "/proc/irq/$irq/smp_affinity" or do {
 			die "irq$irq: smp_affinity: $!"
