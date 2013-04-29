@@ -10,7 +10,7 @@ use strict;
 use Getopt::Long;
 use Data::Dumper;
 
-our $VERSION = '0.3';
+our $VERSION = '0.4';
 our $cfg;
 
 my $verbose;
