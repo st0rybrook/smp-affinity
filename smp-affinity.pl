@@ -84,6 +84,7 @@ sub itf_init_itf
 	$itfs->{$itfname} = { NAME => $itfname, QUEUES => [] };
 }
 
+# set both IRQ_MASK and STEERING_MASK to same value
 sub itf_add_queue
 {
 	my ($itfs, $itfname, $queuenum, $cpunum) = @_;
@@ -91,7 +92,9 @@ sub itf_add_queue
 	my $itf = $itfs->{$itfname};
 	unless (defined ${$itf->{QUEUES}}[$queuenum]) {
 		$itf->{QUEUES}[$queuenum] = {
-				NUM => $queuenum, MASK => 0, IRQ => 0
+				NUM => $queuenum, IRQ => 0,
+				IRQ_MASK => 0,
+				STEERING_MASK => 0,
 			};
 	}
 
@@ -102,7 +105,8 @@ sub itf_add_queue
 		# interface may be just DOWN
 		die "$itfname:$queuenum: no IRQ found for this queue\n";
 	};
-	$queue->{MASK} |= 1 << $cpunum;
+	$queue->{IRQ_MASK} |= 1 << $cpunum;
+	$queue->{STEERING_MASK} |= 1 << $cpunum;
 }
 
 sub itf_cmp
@@ -180,11 +184,14 @@ sub configure_itfs
 		my $itf = $itfs->{$itfname} or die;
 
 		foreach my $queue (@{$itf->{QUEUES}}) {
-			irq_set_affinity($queue->{IRQ}, $queue->{MASK});
-			set_rps_affinity($itfname, $queue->{NUM}, $queue->{MASK});
-			set_xps_affinity($itfname, $queue->{NUM}, $queue->{MASK});
+			irq_set_affinity($queue->{IRQ}, $queue->{IRQ_MASK});
+			set_rps_affinity($itfname, $queue->{NUM},
+				$queue->{STEERING_MASK});
+			set_xps_affinity($itfname, $queue->{NUM},
+				$queue->{STEERING_MASK});
 			printf "$itf->{NAME}:$queue->{NUM}: affinity=%x rps=%x xps=%x\n",
-				$queue->{MASK}, $queue->{MASK}, $queue->{MASK} if $verbose;
+				$queue->{IRQ_MASK}, $queue->{STEERING_MASK},
+				$queue->{STEERING_MASK} if $verbose;
 		}
 	}
 }
