@@ -71,6 +71,9 @@ sub itf_queue_get_irq
 		} elsif ($if_queue =~ /^$itfname-TxRx-$queuenum$/) {
 			$queue_irq = $irqnum;
 			last
+		} elsif ($if_queue =~ /^$itfname-rx-$queuenum$/) {
+			$queue_irq = $irqnum;
+			last
 		}
 	}
 
