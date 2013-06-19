@@ -1,0 +1,9 @@
+* many NICs not supported in /proc/interrupts
+* e1000e reports in /proc/interrupts:
+
+ 54:   23947029   16604739   PCI-MSI-edge      eth1-rx-0
+ 55:   22168904   23840370   PCI-MSI-edge      eth1-tx-0
+ 56:         47          7   PCI-MSI-edge      eth1
+
+But eth1-tx-0 is never configured.
+
