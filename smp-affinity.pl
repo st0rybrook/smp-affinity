@@ -43,10 +43,29 @@ if ($cpumap_path) {
 
 exit 0;
 
-sub itf_queue_get_irq
+# There are several cases to consider:
+#
+# Single IRQ for RX, TX and Link Management:
+#
+#  45:          3          0   PCI-MSI-edge      eth0
+#  -> { LMI => 45 }
+#
+# IRQ for RX/TX, with additional Link Management IRQ (e1000e):
+#
+#  72:          0          0    PCI-MSI-edge      eth3
+#  73:        661          0    PCI-MSI-edge      eth3-rx-0
+#  74:          2        659    PCI-MSI-edge      eth3-tx-1
+#  -> { LMI => 72, RX => 73, TX => 74 }
+#
+# Split RX/TX with Link Management, RX:
+#
+#  72:          0          0    PCI-MSI-edge      eth3
+#  73:        661          0    PCI-MSI-edge      eth3-rxtx-0
+#  -> { LMI => 72, RX => 73, TX => 73 }
+sub itf_queue_get_irqs
 {
 	my ($itfname, $queuenum) = @_;
-	my $queue_irq = 0;
+	my %irqs = ( LMI => 0, RX => 0, TX => 0 );
 
 	open my $fh, '<', '/proc/interrupts' or die "interrupts: $!";
 
@@ -61,23 +80,24 @@ sub itf_queue_get_irq
 		next unless $irq =~ /^(\d+):/;
 		my $irqnum = $1;
 
+		# FIXME does not work for shared IRQs
 		my $if_queue = splice @tokens, -1;
 
 		# FIXME support other formats
 		if ($if_queue =~ /^$itfname$/) {
-			# often this is only the Link Management IRQ, therefore
-			# may be overwritten by next entry.
-			$queue_irq = $irqnum;
+			$irqs{LMI} = $irqnum;
 		} elsif ($if_queue =~ /^$itfname-TxRx-$queuenum$/) {
-			$queue_irq = $irqnum;
+			$irqs{RX} = $irqs{TX} = $irqnum;
 			last
 		} elsif ($if_queue =~ /^$itfname-rx-$queuenum$/) {
-			$queue_irq = $irqnum;
-			last
+			$irqs{RX} = $irqnum;
+		} elsif ($if_queue =~ /^$itfname-tx-$queuenum$/) {
+			$irqs{TX} = $irqnum;
 		}
 	}
 
-	return $queue_irq;
+
+	return \%irqs
 }
 
 sub itf_init_itf
@@ -113,7 +133,7 @@ sub itf_add_queue
 
 	my $queue = ${$itf->{QUEUES}}[$queuenum];
 
-	$queue->{IRQ} = itf_queue_get_irq($itfname, $queuenum) or do {
+	$queue->{IRQS} = itf_queue_get_irqs($itfname, $queuenum) or do {
 		# FIXME probably better to ignore this entry, because
 		# interface may be just DOWN
 		die "$itfname:$queuenum: no IRQ found for this queue\n";
@@ -133,7 +153,7 @@ sub itf_queue_set_irq_affinity
 
 	my $queue = ${$itf->{QUEUES}}[$queuenum];
 
-	$queue->{IRQ} = itf_queue_get_irq($itfname, $queuenum) or do {
+	$queue->{IRQS} = itf_queue_get_irqs($itfname, $queuenum) or do {
 		# FIXME probably better to ignore this entry, because
 		# interface may be just DOWN
 		die "$itfname:$queuenum: no IRQ found for this queue\n";
@@ -186,12 +206,31 @@ sub irq_set_affinity
 
 	# IRQ 0 is the timer IRQ, consider it invalid
 	die "will not configure timer IRQ 0" if $irq == 0;
+
 	open my $fh, '>', "/proc/irq/$irq/smp_affinity" or do {
 			die "irq$irq: smp_affinity: $!"
 		};
 
 	printf $fh "%x", $mask or die;
 	printf "irq$irq: SMP affinity '%x'\n", $mask if $verbose > 1;
+}
+
+sub irq_set_affinity_all
+{
+	my ($irqs, $mask) = @_;
+
+	die unless exists $irqs->{LMI};
+	die unless exists $irqs->{RX};
+	die unless exists $irqs->{TX};
+
+	if ($irqs->{RX}) {
+		irq_set_affinity($irqs->{RX}, $mask);
+	}
+	if ($irqs->{TX} && $irqs->{TX} != $irqs->{RX}) {
+		irq_set_affinity($irqs->{TX}, $mask);
+	}
+
+	irq_set_affinity($irqs->{LMI}, $mask);
 }
 
 sub set_rps_affinity
@@ -232,7 +271,7 @@ sub configure_itfs
 		my $itf = $itfs->{$itfname} or die;
 
 		foreach my $queue (@{$itf->{QUEUES}}) {
-			irq_set_affinity($queue->{IRQ}, $queue->{IRQ_MASK});
+			irq_set_affinity_all($queue->{IRQS}, $queue->{IRQ_MASK});
 			set_rps_affinity($itfname, $queue->{NUM},
 				$queue->{STEERING_MASK});
 			set_xps_affinity($itfname, $queue->{NUM},
@@ -342,10 +381,11 @@ sub config_reset
 		my $if_queue = splice @tokens, -1;
 
 		# FIXME support other NICs
+		# FIXME support split RX/TX IRQs
 		if ($if_queue =~ /^(.+)-TxRx-(\d+)$/) {
 			my ($itfname, $queuenum) = ($1, $2);
 
-			irq_set_affinity($irqnum, 0xffffffff);
+			irq_set_affinity_all($irqnum, 0xffffffff);
 			set_rps_affinity($itfname, $queuenum, 0x0);
 			set_xps_affinity($itfname, $queuenum, 0x0);
 			printf "$itfname:$queuenum: affinity=0xffffffff rps=0x0 "
