@@ -100,11 +100,79 @@ sub itf_queue_get_irqs
 	return \%irqs
 }
 
+# Will return for each interface something like:
+#
+#  {
+#    NAME => 'eth0',
+#    LM_IRQ => 41,
+#    QUEUES => [
+#        { NUM => 0, RX_IRQ => 42, TX_IRQ => 43 },
+#      ]
+#  }
+#
+# RX_IRQ and TX_IRQ may be equal to LM_IRQ, or RX_IRQ may be equal to
+# TX_IRQ.
+sub itf_get_info
+{
+	my ($itfname) = @_;
+	my %ii = (NAME => $itfname, LM_IRQ => 0, QUEUES => []);
+
+	open my $fh, '<', '/proc/interrupts' or die "interrupts: $!";
+
+	while (my $line = <$fh>) {
+		chomp $line;
+
+		my @tokens = split /\s+/, $line;
+		shift @tokens;
+
+		my $irq = shift @tokens;
+		# not an IRQ line
+		next unless $irq =~ /^(\d+):/;
+		my $irqnum = $1;
+
+		# FIXME does not work for shared IRQs
+		my $if_queue = splice @tokens, -1;
+
+		# FIXME support other formats
+		my ($queuenum, $rx_irq, $tx_irq);
+		if ($if_queue =~ /^$itfname$/) {
+			$ii{LM_IRQ} = $irqnum;
+		} elsif ($if_queue =~ /^$itfname-TxRx-(\d+)$/) {
+			$queuenum = $1;
+			$rx_irq = $tx_irq = $irqnum;
+		} elsif ($if_queue =~ /^$itfname-rx-(\d+)$/) {
+			$queuenum = $1;
+			$rx_irq = $irqnum;
+		} elsif ($if_queue =~ /^$itfname-tx-(\d+)$/) {
+			$queuenum = $1;
+			$tx_irq = $irqnum;
+		}
+
+		if (defined $queuenum) {
+			unless (defined ${$ii{QUEUES}}[$queuenum]) {
+				${$ii{QUEUES}}[$queuenum] = {
+					NUM => $queuenum, RX_IRQ => 0, TX_IRQ => 0
+				}
+			}
+
+			my $queue = ${$ii{QUEUES}}[$queuenum];
+			$queue->{RX_IRQ} = $rx_irq if $rx_irq;
+			$queue->{TX_IRQ} = $tx_irq if $tx_irq;
+		}
+	}
+
+	return \%ii
+}
+
 sub itf_init_itf
 {
 	my ($itfs, $itfname) = @_;
 
-	$itfs->{$itfname} = { NAME => $itfname, QUEUES => [] };
+	$itfs->{$itfname} = {
+			NAME => $itfname,
+			QUEUES => [],
+			LM_IRQ => undef,			# Link Management IRQ
+		};
 }
 
 sub itf_init_queue
@@ -114,9 +182,13 @@ sub itf_init_queue
 	if (defined ${$itf->{QUEUES}}[$queuenum]) {
 		die "configuration entry for '$itf->{NAME}:$queuenum' already exists";
 	}
+
+	# A queue may consist of up to three IRQs (Link Management, RX, TX)
 	${$itf->{QUEUES}}[$queuenum] = {
 			NUM => $queuenum, IRQ => 0,
 			IRQ_MASK => 0,
+			RX_IRQ_MASK => 0,
+			TX_IRQ_MASK => 0,
 			STEERING_MASK => 0,
 		};
 }
@@ -138,7 +210,8 @@ sub itf_add_queue
 		# interface may be just DOWN
 		die "$itfname:$queuenum: no IRQ found for this queue\n";
 	};
-	$queue->{IRQ_MASK} |= 1 << $cpunum;
+	$queue->{RX_IRQ_MASK} |= 1 << $cpunum;
+	$queue->{TX_IRQ_MASK} |= 1 << $cpunum;
 	$queue->{STEERING_MASK} |= 1 << $cpunum;
 }
 
@@ -158,7 +231,8 @@ sub itf_queue_set_irq_affinity
 		# interface may be just DOWN
 		die "$itfname:$queuenum: no IRQ found for this queue\n";
 	};
-	$queue->{IRQ_MASK} |= 1 << $cpunum;
+	$queue->{RX_IRQ_MASK} |= 1 << $cpunum;
+	$queue->{TX_IRQ_MASK} |= 1 << $cpunum;
 }
 
 sub itf_queue_set_steering_cpus
@@ -215,27 +289,33 @@ sub irq_set_affinity
 	printf "irq$irq: SMP affinity '%x'\n", $mask if $verbose > 1;
 }
 
-sub irq_set_affinity_all
+sub queue_set_irq_affinity
 {
-	my ($irqs, $mask) = @_;
+	my ($itf, $queue) = @_;
 
-	die unless exists $irqs->{LMI};
-	die unless exists $irqs->{RX};
-	die unless exists $irqs->{TX};
+	die unless exists $itf->{LM_IRQ};
+	die unless exists $queue->{RX_IRQ};
+	die unless exists $queue->{RX_IRQ_MASK};
+	die unless exists $queue->{TX_IRQ};
+	die unless exists $queue->{TX_IRQ_MASK};
 
-	if ($irqs->{RX}) {
-		irq_set_affinity($irqs->{RX}, $mask);
+	if ($queue->{RX_IRQ}) {
+		irq_set_affinity($queue->{RX_IRQ}, $queue->{RX_IRQ_MASK});
 	}
-	if ($irqs->{TX} && $irqs->{TX} != $irqs->{RX}) {
-		irq_set_affinity($irqs->{TX}, $mask);
+	if ($queue->{TX_IRQ} && $queue->{TX_IRQ} != $queue->{RX_IRQ}) {
+		irq_set_affinity($queue->{TX_IRQ}, $queue->{TX_IRQ_MASK});
 	}
 
-	irq_set_affinity($irqs->{LMI}, $mask);
+	# TODO set LM IRQ as well?
+	#irq_set_affinity($itf->{LMI}, 0xffffffff);
 }
 
 sub set_rps_affinity
 {
-	my ($itfname, $queuenum, $mask) = @_;
+	my ($itf, $queue) = @_;
+	my $itfname = $itf->{NAME};
+	my $queuenum = $queue->{NUM};
+	my $mask = $queue->{STEERING_MASK};
 
 	# Disable RPS.  Note that specifying a mask of 0xffffffff is
 	# different, as it enables RPS for all CPUs.
@@ -250,7 +330,10 @@ sub set_rps_affinity
 
 sub set_xps_affinity
 {
-	my ($itfname, $queuenum, $mask) = @_;
+	my ($itf, $queue) = @_;
+	my $itfname = $itf->{NAME};
+	my $queuenum = $queue->{NUM};
+	my $mask = $queue->{STEERING_MASK};
 
 	# Disable XPS.  Note that specifying a mask of 0xffffffff is
 	# different, as it enables XPS for all CPUs.
@@ -271,14 +354,42 @@ sub configure_itfs
 		my $itf = $itfs->{$itfname} or die;
 
 		foreach my $queue (@{$itf->{QUEUES}}) {
-			irq_set_affinity_all($queue->{IRQS}, $queue->{IRQ_MASK});
-			set_rps_affinity($itfname, $queue->{NUM},
-				$queue->{STEERING_MASK});
-			set_xps_affinity($itfname, $queue->{NUM},
-				$queue->{STEERING_MASK});
+			queue_set_irq_affinity($itf, $queue);
+		
+			set_rps_affinity($itf, $queue);
+			set_xps_affinity($itf, $queue);
 			printf "$itf->{NAME}:$queue->{NUM}: affinity=%x rps=%x xps=%x\n",
 				$queue->{IRQ_MASK}, $queue->{STEERING_MASK},
 				$queue->{STEERING_MASK} if $verbose;
+		}
+	}
+}
+
+# Determine mask for each of the three queue entities, notably
+# 'rx', 'tx' and 'steering'.  By specifying 'steering' the mask
+# for both RPS and XPS is returned.
+sub get_irq_mask
+{
+	my ($queue_cfg, $ii, $what) = @_;
+	my %fields = (
+			rx => ['RX_IRQ_CPUS', 'IRQ_CPUS', 'CPUS' ],
+			tx => ['TX_IRQ_CPUS', 'IRQ_CPUS', 'CPUS' ],
+			steering => ['STEERING_CPUS', 'CPUS' ],
+		);
+
+	return unless $queue_cfg || not exists $fields{$what};
+
+	foreach my $fld (@{$fields{$what}}) {
+		if (exists $queue_cfg->{$fld}) {
+			if (exists $queue_cfg->{$fld}) {
+				my $mask;
+
+				foreach my $cpu (@{$queue_cfg->{$fld}}) {
+					$mask |= 1 << $cpu;
+				}
+
+				return $mask
+			}
 		}
 	}
 }
@@ -291,30 +402,36 @@ sub config_apply
 	do $path or die "$path: $!\n";
 
 	foreach my $itfname (sort itf_cmp keys %{$cfg->{INTERFACES}}) {
-		my $itf = $cfg->{INTERFACES}{$itfname} or die;
+		my $itf_cfg = $cfg->{INTERFACES}{$itfname};
 
-		itf_init_itf(\%itfs, $itfname) unless exists $itfs{$itfname};
+		unless (exists $itfs{$itfname}) {
+			$itfs{$itfname} = itf_get_info($itfname);
+		}
 
-		foreach my $queue (ref($itf) eq 'ARRAY' ? @$itf : $itf) {
-			foreach my $queuenum (@{$queue->{QUEUES}}) {
-				if (exists $queue->{IRQ_CPUS}) {
-					foreach my $cpunum (@{$queue->{IRQ_CPUS}}) {
-						itf_queue_set_irq_affinity(\%itfs, $itfname, $queuenum,
-							$cpunum);
-					}
+		my $ii = $itfs{$itfname};
+		foreach my $queue_cfg (@$itf_cfg) {
+			foreach my $queuenum (@{$queue_cfg->{QUEUES}}) {
+				my $qi = ${$ii->{QUEUES}}[$queuenum];
+
+				$qi->{RX_IRQ_MASK} = get_irq_mask($queue_cfg, $ii, 'rx');
+				unless ($qi->{RX_IRQ_MASK}) {
+					die "$itfname:$queuenum: empty RX mask, config missing\n";
 				}
-
-				foreach my $cpunum (@{$queue->{CPUS}}) {
-					itf_queue_set_irq_affinity(\%itfs, $itfname, $queuenum,
-						$cpunum) if not exists $queue->{IRQ_CPUS};
-					itf_queue_set_steering_cpus(\%itfs, $itfname, $queuenum,
-						$cpunum);
+				$qi->{TX_IRQ_MASK} = get_irq_mask($queue_cfg, $ii, 'tx');
+				unless ($qi->{TX_IRQ_MASK}) {
+					die "$itfname:$queuenum: empty TX mask, config missing\n";
+				}
+				$qi->{STEERING_MASK} = get_irq_mask($queue_cfg, $ii,
+						'steering');
+				unless ($qi->{STEERING_MASK}) {
+					die "$itfname:$queuenum: empty steering mask, "
+						. "config missing\n";
 				}
 			}
 		}
 	}
 
-	#dump_itfs(\%itfs);
+	dump_itfs(\%itfs) if $verbose > 1;
 
 	configure_itfs(\%itfs);
 }

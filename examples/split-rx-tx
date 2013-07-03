@@ -1,0 +1,26 @@
+# test split configuration for RX and TX
+#
+# Sample from /proc/interrupts:
+#
+#  51:   12040572   14247094   PCI-MSI-edge      eth0-rx-0
+#  52:      95249     105940   PCI-MSI-edge      eth0-tx-0
+#  53:        292        131   PCI-MSI-edge      eth0
+#
+# Here 'eth0' is the Link Management interrupt.
+
+$cfg = {
+	INTERFACES => {
+		eth0 => [
+				# specify different CPUs for RX, as RX_IRQ_CPUS
+				# takes precedence over CPUS and IRQ_CPUS.
+				{ QUEUES => [0], CPUS => [0,1], RX_IRQ_CPUS => [1] },
+			],
+
+		eth1 => [
+				# specify different CPUs for TX, as TX_IRQ_CPUS
+				# takes precedence over CPUS and IRQ_CPUS.
+				{ QUEUES => [0], CPUS => [0,1], RX_IRQ_CPUS => [1] },
+			],
+	},
+};
+
