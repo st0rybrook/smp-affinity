@@ -100,7 +100,19 @@ sub itf_queue_get_irqs
 	return \%irqs
 }
 
-# Will return for each interface something like:
+sub itf_init_itf
+{
+	my ($itfname) = @_;
+
+	return {
+			NAME => $itfname,
+			LM_IRQ => undef,			# Link Management IRQ
+			QUEUES => [],
+		}
+}
+
+# Read interface info from /proc/interrupts.  Will return for each
+# interface something like:
 #
 #  {
 #    NAME => 'eth0',
@@ -115,7 +127,7 @@ sub itf_queue_get_irqs
 sub itf_get_info
 {
 	my ($itfname) = @_;
-	my %ii = (NAME => $itfname, LM_IRQ => 0, QUEUES => []);
+	my $ii = itf_init_itf($itfname);
 
 	open my $fh, '<', '/proc/interrupts' or die "interrupts: $!";
 
@@ -136,7 +148,7 @@ sub itf_get_info
 		# FIXME support other formats
 		my ($queuenum, $rx_irq, $tx_irq);
 		if ($if_queue =~ /^$itfname$/) {
-			$ii{LM_IRQ} = $irqnum;
+			$ii->{LM_IRQ} = $irqnum;
 		} elsif ($if_queue =~ /^$itfname-TxRx-(\d+)$/) {
 			$queuenum = $1;
 			$rx_irq = $tx_irq = $irqnum;
@@ -149,30 +161,17 @@ sub itf_get_info
 		}
 
 		if (defined $queuenum) {
-			unless (defined ${$ii{QUEUES}}[$queuenum]) {
-				${$ii{QUEUES}}[$queuenum] = {
-					NUM => $queuenum, RX_IRQ => 0, TX_IRQ => 0
-				}
+			unless (defined ${$ii->{QUEUES}}[$queuenum]) {
+				itf_init_queue($ii, $queuenum);
 			}
 
-			my $queue = ${$ii{QUEUES}}[$queuenum];
+			my $queue = ${$ii->{QUEUES}}[$queuenum];
 			$queue->{RX_IRQ} = $rx_irq if $rx_irq;
 			$queue->{TX_IRQ} = $tx_irq if $tx_irq;
 		}
 	}
 
-	return \%ii
-}
-
-sub itf_init_itf
-{
-	my ($itfs, $itfname) = @_;
-
-	$itfs->{$itfname} = {
-			NAME => $itfname,
-			QUEUES => [],
-			LM_IRQ => undef,			# Link Management IRQ
-		};
+	return $ii
 }
 
 sub itf_init_queue
@@ -185,68 +184,31 @@ sub itf_init_queue
 
 	# A queue may consist of up to three IRQs (Link Management, RX, TX)
 	${$itf->{QUEUES}}[$queuenum] = {
-			NUM => $queuenum, IRQ => 0,
-			IRQ_MASK => 0,
+			NUM => $queuenum,
+			RX_IRQ => 0,
 			RX_IRQ_MASK => 0,
+			TX_IRQ => 0,
 			TX_IRQ_MASK => 0,
 			STEERING_MASK => 0,
 		};
 }
 
-# set both IRQ_MASK and STEERING_MASK to same value
+# set all values (RX_IRQ_MASK, TX_IRQ_MASK and STEERING_MASK to
+# same value
 sub itf_add_queue
 {
-	my ($itfs, $itfname, $queuenum, $cpunum) = @_;
+	my ($itf, $queuenum, $cpu) = @_;
 
-	my $itf = $itfs->{$itfname};
 	unless (defined ${$itf->{QUEUES}}[$queuenum]) {
 		itf_init_queue($itf, $queuenum);
 	}
+	my $qi = ${$itf->{QUEUES}}[$queuenum];
 
-	my $queue = ${$itf->{QUEUES}}[$queuenum];
-
-	$queue->{IRQS} = itf_queue_get_irqs($itfname, $queuenum) or do {
-		# FIXME probably better to ignore this entry, because
-		# interface may be just DOWN
-		die "$itfname:$queuenum: no IRQ found for this queue\n";
-	};
-	$queue->{RX_IRQ_MASK} |= 1 << $cpunum;
-	$queue->{TX_IRQ_MASK} |= 1 << $cpunum;
-	$queue->{STEERING_MASK} |= 1 << $cpunum;
-}
-
-sub itf_queue_set_irq_affinity
-{
-	my ($itfs, $itfname, $queuenum, $cpunum) = @_;
-
-	my $itf = $itfs->{$itfname};
-	unless (defined ${$itf->{QUEUES}}[$queuenum]) {
-		itf_init_queue($itf, $queuenum);
-	}
-
-	my $queue = ${$itf->{QUEUES}}[$queuenum];
-
-	$queue->{IRQS} = itf_queue_get_irqs($itfname, $queuenum) or do {
-		# FIXME probably better to ignore this entry, because
-		# interface may be just DOWN
-		die "$itfname:$queuenum: no IRQ found for this queue\n";
-	};
-	$queue->{RX_IRQ_MASK} |= 1 << $cpunum;
-	$queue->{TX_IRQ_MASK} |= 1 << $cpunum;
-}
-
-sub itf_queue_set_steering_cpus
-{
-	my ($itfs, $itfname, $queuenum, $cpunum) = @_;
-
-	my $itf = $itfs->{$itfname};
-	unless (defined ${$itf->{QUEUES}}[$queuenum]) {
-		itf_init_queue($itf, $queuenum);
-	}
-
-	my $queue = ${$itf->{QUEUES}}[$queuenum];
-
-	$queue->{STEERING_MASK} |= 1 << $cpunum;
+	# No IRQs are set for virtual NICs (lo, tun, etc.).  Don't set the
+	# mask there as well.
+	$qi->{RX_IRQ_MASK} |= 1 << $cpu if $qi->{RX_IRQ};
+	$qi->{TX_IRQ_MASK} |= 1 << $cpu if $qi->{TX_IRQ};
+	$qi->{STEERING_MASK} |= 1 << $cpu;
 }
 
 sub itf_cmp
@@ -457,21 +419,23 @@ sub cpumap_apply
 		if ($cpu !~ /^cpu(\d+):/) {
 			usage(1, "$path:$lineno: $cpu: not a valid CPU");
 		}
-		my $cpunum = $1;
+		my $cpu = $1;
 
 		foreach my $if_queue (@tokens) {
 			if ($if_queue =~ /^(\S+):(\d+)$/) {
-				my ($itf, $queuenum) = ($1, $2);
+				my ($itfname, $queuenum) = ($1, $2);
 
-				itf_init_itf(\%itfs, $itf) unless exists $itfs{$itf};
-				itf_add_queue(\%itfs, $itf, $queuenum, $cpunum);
+				unless (exists $itfs{$itfname}) {
+					$itfs{$itfname} = itf_get_info($itfname);
+				}
+				itf_add_queue($itfs{$itfname}, $queuenum, $cpu);
 			}
 		}
 	}
 
 	# TODO check if all queues of NIC are set
 
-	#dump_itfs(\%itfs);
+	dump_itfs(\%itfs) if $verbose > 1;
 
 	configure_itfs(\%itfs);
 }
